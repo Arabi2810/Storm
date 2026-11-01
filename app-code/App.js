@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 /* If you test on a real phone, put your laptop's Wi-Fi IP here, e.g. '192.168.0.105' */
 const LAN_IP = '';
 const HOST = LAN_IP || (Platform.OS === 'android' ? '10.0.2.2' : 'localhost');
-const API = `https://storm-tebd.onrender.com/api`;
+const API = `http://${HOST}:5000/api`;
 
 let TOKEN = null;
 let notify = () => {};
