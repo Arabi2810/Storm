@@ -26,6 +26,6 @@
     }
    "experiments": { 
      "baseUrl": "/Storm" 
-   }
+   },
   }
 }
