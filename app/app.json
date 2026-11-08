@@ -23,9 +23,9 @@
       "shortName": "Student Income",
       "themeColor": "#07483C",
       "backgroundColor": "#F4F6F5"
-    }
+    },
    "experiments": { 
      "baseUrl": "/Storm" 
-   },
+   }
   }
 }
