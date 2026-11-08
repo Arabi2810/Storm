@@ -10,6 +10,7 @@ const {
   JWT_SECRET = 'change-this-secret',
   PORT = 5000,
   ADMIN_SETUP_CODE = '',
+  PAY_BKASH = '', PAY_NAGAD = '', PAY_ROCKET = '', PAY_BANK = '',
 } = process.env;
 const COMMISSION = Number(process.env.COMMISSION || 0.12);
 
@@ -31,6 +32,7 @@ const User = mongoose.model('User', new mongoose.Schema({
   ratingCount: { type: Number, default: 0 },
   companyName: String, industry: String, website: String, licenseNo: String, city: String,
   warnings: [{ reason: String, at: { type: Date, default: Date.now } }],
+  payout: { method: String, account: String, holder: String }, // where the student wants to be paid
 }, { timestamps: true }));
 
 // requested -> ready (admin wrote the test) -> submitted -> scored
@@ -47,11 +49,32 @@ const Task = mongoose.model('Task', new mongoose.Schema({
   budget: Number, fee: Number, payout: Number, deadline: Date,
   revisions: { type: Number, default: 1 }, revisionsUsed: { type: Number, default: 0 },
   status: { type: String, default: 'pending' },
+  paymentState: { type: String, default: 'none' }, // none | review | rejected | confirmed (company deposit)
   comments: [{ user: ref('User'), text: String, at: { type: Date, default: Date.now } }],
   studentAcceptedAt: Date,
   submission: { text: String, at: Date },
   feedback: String,
   rating: { score: Number, comment: String },
+}, { timestamps: true }));
+
+
+// Private chat between the company and the chosen student (admin can read and join).
+const messageSchema = new mongoose.Schema({
+  task: ref('Task'), sender: ref('User'), text: String,
+  readBy: [ref('User')],
+}, { timestamps: true });
+messageSchema.index({ task: 1, createdAt: 1 });
+const Message = mongoose.model('Message', messageSchema);
+
+// Every money movement. deposit = company -> platform, payout = platform -> student.
+// deposit: pending -> confirmed | rejected (admin checks the TrxID). payout: recorded as confirmed by admin.
+const Txn = mongoose.model('Txn', new mongoose.Schema({
+  task: ref('Task'), user: ref('User'), // user = the company (deposit) or the student (payout)
+  type: { type: String, enum: ['deposit', 'payout'], required: true },
+  amount: Number, fee: Number, gross: Number,
+  method: String, account: String, trxId: String,
+  status: { type: String, default: 'pending' }, // pending | confirmed | rejected
+  reason: String, reviewedBy: ref('User'), reviewedAt: Date,
 }, { timestamps: true }));
 
 /* ---------- Helpers ---------- */
@@ -63,6 +86,11 @@ const same = (a, b) => String(a) === String(b);
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 const clean = (v) => String(v || '').trim();
 const ACTIVE_JOB = ['assigned', 'funded', 'submitted', 'revision'];
+const CHAT_OK = ['assigned', 'funded', 'submitted', 'revision', 'accepted', 'paid']; // chat is open once a student is chosen
+const HELD = ['funded', 'submitted', 'revision', 'accepted']; // company money is held by the platform
+const METHODS = ['bkash', 'nagad', 'rocket', 'bank'];
+const MOBILE = ['bkash', 'nagad', 'rocket'];
+const sum = (arr, f) => arr.reduce((a, x) => a + (Number(f(x)) || 0), 0);
 const maybeTrust = (u) => {
   if (u.level === 'verified' && u.completed >= 3 && u.ratingCount > 0 && u.ratingSum / u.ratingCount >= 4) u.level = 'trusted';
 };
@@ -247,7 +275,15 @@ app.get('/api/tasks/:id', auth(), h(async (req, res) => {
   const canComment = u.role === 'student' ? isAssigned || (t.status === 'open' && verified) : isOwner;
   const o = t.toObject();
   if (!isOwner && u.role !== 'admin') { delete o.budget; delete o.fee; }
-  res.json({ ...o, me: { isOwner, isAssigned, verified, canComment } });
+  let txns = [];
+  if (isOwner || isAssigned || u.role === 'admin') {
+    txns = await Txn.find({ task: t._id }).sort('createdAt').lean();
+    if (isOwner) txns = txns.filter((x) => x.type === 'deposit');
+    if (isAssigned) txns = txns.filter((x) => x.type === 'payout' && x.status === 'confirmed');
+  }
+  if (!isOwner && u.role !== 'admin') delete o.paymentState;
+  const canChat = (isOwner || isAssigned || u.role === 'admin') && !!t.student && CHAT_OK.includes(t.status);
+  res.json({ ...o, txns, me: { isOwner, isAssigned, verified, canComment, canChat } });
 }));
 
 app.post('/api/tasks/:id/comments', auth('student', 'company'), h(async (req, res) => {
@@ -326,6 +362,137 @@ app.post('/api/tasks/:id/rate', auth('company'), h(async (req, res) => {
   res.json(t);
 }));
 
+
+/* ---------- Chat (company <-> chosen student, admin can join) ---------- */
+const chatTask = async (req) => {
+  const u = req.user;
+  const t = await Task.findById(req.params.id);
+  if (!t) throw fail(404, 'Job not found');
+  const isOwner = u.role === 'company' && same(t.company, u._id);
+  const isAssigned = u.role === 'student' && !!t.student && same(t.student, u._id);
+  if (!(isOwner || isAssigned || u.role === 'admin')) throw fail(403, 'You cannot open this chat');
+  if (!t.student || !CHAT_OK.includes(t.status)) throw fail(400, 'Chat opens after a student is chosen for the job');
+  return t;
+};
+
+app.get('/api/tasks/:id/messages', auth(), h(async (req, res) => {
+  const t = await chatTask(req);
+  const msgs = await Message.find({ task: t._id }).sort('-createdAt').limit(200).populate('sender', 'name role companyName').lean();
+  msgs.reverse();
+  await Message.updateMany({ task: t._id, readBy: { $ne: req.user._id } }, { $addToSet: { readBy: req.user._id } });
+  const [co, st] = await Promise.all([User.findById(t.company).select('companyName name'), User.findById(t.student).select('name')]);
+  res.json({
+    task: { _id: t._id, title: t.title, status: t.status },
+    company: co && (co.companyName || co.name), student: st && st.name,
+    messages: msgs.map((m) => ({ _id: m._id, text: m.text, at: m.createdAt, mine: !!m.sender && same(m.sender._id, req.user._id), role: m.sender && m.sender.role, name: m.sender && (m.sender.role === 'company' ? m.sender.companyName || m.sender.name : m.sender.name) })),
+  });
+}));
+
+app.post('/api/tasks/:id/messages', auth(), h(async (req, res) => {
+  const t = await chatTask(req);
+  const text = clean(req.body.text);
+  if (!text) throw fail(400, 'Write a message first');
+  if (text.length > 1000) throw fail(400, 'Messages can be up to 1000 characters');
+  const m = await Message.create({ task: t._id, sender: req.user._id, text, readBy: [req.user._id] });
+  res.json({ _id: m._id, at: m.createdAt });
+}));
+
+// Inbox: one row per job conversation, with the last message and how many you have not read.
+app.get('/api/chats', auth(), h(async (req, res) => {
+  const u = req.user;
+  let tasks;
+  if (u.role === 'admin') {
+    const ids = await Message.distinct('task');
+    tasks = await Task.find({ _id: { $in: ids } });
+  } else {
+    const q = u.role === 'company' ? { company: u._id, student: { $ne: null } } : { student: u._id };
+    tasks = await Task.find({ ...q, status: { $in: CHAT_OK } });
+  }
+  const stats = await Message.aggregate([
+    { $match: { task: { $in: tasks.map((t) => t._id) } } },
+    { $sort: { createdAt: -1 } },
+    { $group: { _id: '$task', last: { $first: '$$ROOT' }, unread: { $sum: { $cond: [{ $in: [u._id, '$readBy'] }, 0, 1] } } } },
+  ]);
+  const by = {};
+  stats.forEach((x) => { by[String(x._id)] = x; });
+  const people = await User.find({ _id: { $in: [...tasks.map((t) => t.company), ...tasks.map((t) => t.student)].filter(Boolean) } }).select('name companyName').lean();
+  const nameOf = (id) => { const p = people.find((x) => same(x._id, id)); return p ? p.companyName || p.name : ''; };
+  const rows = tasks.map((t) => {
+    const s = by[String(t._id)];
+    return {
+      task: t._id, title: t.title, status: t.status,
+      other: u.role === 'company' ? nameOf(t.student) : u.role === 'student' ? nameOf(t.company) : `${nameOf(t.company)} and ${nameOf(t.student)}`,
+      last: s ? { text: s.last.text, at: s.last.createdAt, mine: same(s.last.sender, u._id) } : null,
+      unread: s ? s.unread : 0,
+    };
+  });
+  rows.sort((a, b) => new Date(b.last ? b.last.at : 0) - new Date(a.last ? a.last.at : 0));
+  res.json(rows);
+}));
+
+/* ---------- Payments ---------- */
+const checkAccount = (method, account) => {
+  if (!METHODS.includes(method)) throw fail(400, 'Choose a payment method');
+  const acc = clean(account).replace(/[\s-]/g, '');
+  if (MOBILE.includes(method) && !PHONE_RE.test(acc)) throw fail(400, 'Enter a valid mobile number, like 01712345678');
+  if (!MOBILE.includes(method) && acc.length < 4) throw fail(400, 'Enter the bank account number');
+  return acc;
+};
+const checkTrx = async (method, trxId) => {
+  const trx = clean(trxId).toUpperCase().replace(/\s/g, '');
+  if (!/^[A-Z0-9]{6,24}$/.test(trx)) throw fail(400, 'Enter the transaction ID (6 to 24 letters or numbers)');
+  if (await Txn.findOne({ method, trxId: trx, status: { $ne: 'rejected' } })) throw fail(400, 'This transaction ID was already used');
+  return trx;
+};
+
+// Where companies should send money (set in backend/.env).
+app.get('/api/payment-info', auth(), (req, res) => {
+  const all = [['bkash', 'bKash (send money)', PAY_BKASH], ['nagad', 'Nagad (send money)', PAY_NAGAD], ['rocket', 'Rocket', PAY_ROCKET], ['bank', 'Bank transfer', PAY_BANK]];
+  res.json(all.filter((x) => x[2]).map(([method, label, number]) => ({ method, label, number })));
+});
+
+// Student chooses where to be paid.
+app.put('/api/me/payout', auth('student'), h(async (req, res) => {
+  const method = clean(req.body.method);
+  const account = checkAccount(method, req.body.account);
+  if (method === 'bank' && clean(req.body.holder).length < 2) throw fail(400, 'Enter the account holder name');
+  req.user.payout = { method, account, holder: clean(req.body.holder) };
+  await req.user.save();
+  res.json(pub(req.user));
+}));
+
+// Company reports the money it sent. Admin checks the TrxID, then work can start.
+app.post('/api/tasks/:id/deposit', auth('company'), h(async (req, res) => {
+  const t = await ownedTask(req);
+  if (t.status !== 'assigned') throw fail(400, 'Payment is not needed for this job now');
+  if (!t.studentAcceptedAt) throw fail(400, 'Wait until the student accepts the terms, then pay');
+  if (await Txn.findOne({ task: t._id, type: 'deposit', status: 'pending' })) throw fail(400, 'Your payment is already waiting for admin to confirm');
+  const method = clean(req.body.method);
+  const account = checkAccount(method, req.body.account);
+  const trxId = await checkTrx(method, req.body.trxId);
+  const x = await Txn.create({ task: t._id, user: req.user._id, type: 'deposit', amount: t.budget, method, account, trxId });
+  t.paymentState = 'review';
+  await t.save();
+  res.json(x);
+}));
+
+app.get('/api/txns/mine', auth('student', 'company'), h(async (req, res) => {
+  const u = req.user;
+  const isCo = u.role === 'company';
+  const txns = await Txn.find({ user: u._id, type: isCo ? 'deposit' : 'payout' }).sort('-createdAt').populate('task', 'title').lean();
+  const tasks = await Task.find(isCo ? { company: u._id, student: { $ne: null } } : { student: u._id }).select('budget payout status').lean();
+  const summary = isCo ? {
+    held: sum(tasks.filter((t) => HELD.includes(t.status)), (t) => t.budget),
+    spent: sum(tasks.filter((t) => t.status === 'paid'), (t) => t.budget),
+    pending: sum(txns.filter((x) => x.status === 'pending'), (x) => x.amount),
+  } : {
+    earned: sum(tasks.filter((t) => t.status === 'paid'), (t) => t.payout),
+    working: sum(tasks.filter((t) => ['funded', 'submitted', 'revision'].includes(t.status)), (t) => t.payout),
+    awaiting: sum(tasks.filter((t) => t.status === 'accepted'), (t) => t.payout),
+  };
+  res.json({ txns, summary, payout: u.payout || null });
+}));
+
 /* ---------- Admin ---------- */
 app.get('/api/admin/overview', auth('admin'), h(async (req, res) => {
   const c = (q) => Task.countDocuments(q);
@@ -333,7 +500,7 @@ app.get('/api/admin/overview', auth('admin'), h(async (req, res) => {
     User.countDocuments({ role: 'student' }), User.countDocuments({ role: 'company', status: 'active' }),
     User.countDocuments({ role: 'company', status: 'pending' }),
     Skill.countDocuments({ status: 'requested' }), Skill.countDocuments({ status: 'submitted' }),
-    c({ status: 'pending' }), c({ status: 'assigned' }), c({ status: 'accepted' }), c({ status: 'open' }), c({ status: 'paid' }),
+    c({ status: 'pending' }), Txn.countDocuments({ type: 'deposit', status: 'pending' }), c({ status: 'accepted' }), c({ status: 'open' }), c({ status: 'paid' }),
   ]);
   res.json({ students, companies, pendingCompanies, toArrange, toScore, toPublish, toFund, toPay, openJobs, paidJobs });
 }));
@@ -398,19 +565,65 @@ app.get('/api/admin/tasks', auth('admin'), h(async (req, res) => {
   res.json(await Task.find().sort('-createdAt').populate('company', 'companyName').populate('student', 'name'));
 }));
 
-const STEP = { approve: ['pending', 'open'], reject: ['pending', 'rejected'], fund: ['assigned', 'funded'], pay: ['accepted', 'paid'] };
+app.get('/api/admin/finance', auth('admin'), h(async (req, res) => {
+  const [tasks, pending, due, ledger, paidTx] = await Promise.all([
+    Task.find({ student: { $ne: null } }).select('budget fee payout status').lean(),
+    Txn.find({ type: 'deposit', status: 'pending' }).sort('createdAt').populate('user', 'companyName name phone').populate('task', 'title budget').lean(),
+    Task.find({ status: 'accepted' }).sort('updatedAt').populate('student', 'name phone payout').populate('company', 'companyName').lean(),
+    Txn.find({ status: { $ne: 'pending' } }).sort('-updatedAt').limit(60).populate('user', 'companyName name').populate('task', 'title').lean(),
+    Txn.find({ type: 'payout', status: 'confirmed' }).select('amount').lean(),
+  ]);
+  res.json({
+    summary: {
+      held: sum(tasks.filter((t) => HELD.includes(t.status)), (t) => t.budget),
+      commission: sum(tasks.filter((t) => t.status === 'paid'), (t) => t.fee),
+      paidOut: sum(paidTx, (x) => x.amount),
+      pendingAmount: sum(pending, (x) => x.amount),
+    },
+    pending, due, ledger,
+  });
+}));
+
+app.post('/api/admin/txns/:id/:action', auth('admin'), h(async (req, res) => {
+  const x = await Txn.findById(req.params.id);
+  if (!x || x.type !== 'deposit' || x.status !== 'pending') throw fail(400, 'This payment is not waiting for review');
+  const t = await Task.findById(x.task);
+  if (!t) throw fail(404, 'Job not found');
+  if (req.params.action === 'confirm') {
+    if (t.status !== 'assigned') throw fail(400, 'This job is not waiting for payment');
+    x.status = 'confirmed'; t.status = 'funded'; t.paymentState = 'confirmed';
+  } else if (req.params.action === 'reject') {
+    if (clean(req.body.reason).length < 3) throw fail(400, 'Tell the company why the payment was not accepted');
+    x.status = 'rejected'; x.reason = clean(req.body.reason); t.paymentState = 'rejected';
+  } else throw fail(400, 'Unknown action');
+  x.reviewedBy = req.user._id; x.reviewedAt = new Date();
+  await x.save(); await t.save();
+  res.json(x);
+}));
+
+// Admin sent the student's money: record how, with the TrxID, and close the job.
+app.post('/api/admin/tasks/:id/pay', auth('admin'), h(async (req, res) => {
+  const t = await Task.findById(req.params.id);
+  if (!t || t.status !== 'accepted') throw fail(400, 'Not possible at this stage');
+  const u = await User.findById(t.student);
+  const method = clean(req.body.method) || (u.payout && u.payout.method);
+  const account = checkAccount(method, req.body.account || (u.payout && u.payout.account));
+  const trxId = await checkTrx(method, req.body.trxId);
+  await Txn.create({ task: t._id, user: u._id, type: 'payout', amount: t.payout, fee: t.fee, gross: t.budget, method, account, trxId, status: 'confirmed', reviewedBy: req.user._id, reviewedAt: new Date() });
+  t.status = 'paid';
+  await t.save();
+  u.completed += 1; maybeTrust(u);
+  await u.save();
+  res.json(t);
+}));
+
+const STEP = { approve: ['pending', 'open'], reject: ['pending', 'rejected'] };
 app.post('/api/admin/tasks/:id/:action', auth('admin'), h(async (req, res) => {
   const step = STEP[req.params.action];
   const t = await Task.findById(req.params.id);
   if (!step || !t || t.status !== step[0]) throw fail(400, 'Not possible at this stage');
-  if (req.params.action === 'fund' && !t.studentAcceptedAt) throw fail(400, 'The student has not accepted the terms yet');
   t.status = step[1];
   await t.save();
-  if (req.params.action === 'pay') {
-    const u = await User.findById(t.student);
-    u.completed += 1; maybeTrust(u);
-    await u.save();
-  }
   res.json(t);
 }));
 
