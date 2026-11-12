@@ -7,7 +7,7 @@ const HOST = LAN_IP || (Platform.OS === 'android' ? '10.0.2.2' : 'localhost');
 
 /* After you deploy the backend (for example on Render), paste its link here, with no slash at the end:
    'https://student-income-api.onrender.com'. Leave it empty while testing on your own computer. */
-const PROD_API = 'https://storm-tebd.onrender.com';
+const PROD_API = '';
 const onLocalWeb = Platform.OS === 'web' && typeof location !== 'undefined' && /^(localhost|127\.)/.test(location.hostname);
 export const API = PROD_API && !onLocalWeb ? `${PROD_API}/api` : `http://${HOST}:5000/api`;
 
