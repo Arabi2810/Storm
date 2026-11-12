@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, Pressable, Platform } from 'react-native';
 import { C, FONT } from '../theme';
-import { H1, Title, Body, Small, Card, Tap, Btn, Field, Chip, StatusChip, Row, Avatar, Empty, Loading, Section, Banner, Tabs, FadeIn } from '../components/ui';
+import { H1, Title, Body, Small, Card, Tap, Btn, Field, Chip, StatusChip, Row, Avatar, Empty, Loading, Section, Banner, Tabs, FadeIn, useTabDir } from '../components/ui';
 import { api, run, useLoad, money } from '../api';
 import { Inbox, useUnread } from './Chat';
 import { Wallet } from './Money';
@@ -63,6 +63,7 @@ export function PostJob({ user, done }) {
 export function Company({ user, open, post, chat }) {
   const [tasks] = useLoad('/tasks/mine');
   const [tab, setTab] = useState('My jobs');
+  const tdir = useTabDir(['My jobs', 'Messages', 'Payments'], tab);
   const unread = useUnread();
   const active = user.status === 'active';
   return (
@@ -77,13 +78,13 @@ export function Company({ user, open, post, chat }) {
         <H1 style={{ fontSize: 22, lineHeight: 28, marginTop: 10 }}>{user.companyName}</H1>
         <Small style={{ marginTop: 2 }}>{user.industry} · {user.city}</Small>
         {active
-          ? <Btn title="Post a new job" icon="+" onPress={post} />
+          ? <Btn pulse title="Post a new job" icon="+" onPress={post} />
           : <Body style={{ marginTop: 12 }}>An admin is verifying your company. This page updates by itself once you’re approved.</Body>}
         </View>
       </Card>
 
       {active && <Tabs items={['My jobs', 'Messages', 'Payments']} tab={tab} setTab={setTab} badges={{ Messages: unread }} />}
-      <FadeIn key={tab}>
+      <FadeIn key={tab} from={tdir} dist={14} dur={360}>
       {tab === 'Messages' && active && <Inbox open={chat} />}
       {tab === 'Payments' && active && <Wallet user={user} />}
       {(tab === 'My jobs' || !active) && (

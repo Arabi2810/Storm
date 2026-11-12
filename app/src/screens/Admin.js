@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { C, FONT } from '../theme';
-import { H1, Title, Body, Small, Card, Tap, Btn, Field, Chip, StatusChip, Row, Avatar, Empty, Loading, Tabs, Seg, Section, Stat, FadeIn } from '../components/ui';
+import { H1, Title, Body, Small, Card, Tap, Btn, Field, Chip, StatusChip, Row, Avatar, Empty, Loading, Tabs, Seg, Section, Stat, FadeIn, useTabDir } from '../components/ui';
 import { api, run, useLoad, money, stars, norm } from '../api';
 import { suggest } from './Student';
 import { Inbox, useUnread } from './Chat';
@@ -134,15 +134,24 @@ function ArrangeBox({ k, reload }) {
 }
 
 function ScoreBox({ k, reload }) {
-  const [score, setScore] = useState('');
-  const [rating, setRating] = useState(4);
-  const [feedback, setFeedback] = useState('');
+  const ai = k.aiReview || {};
+  const [score, setScore] = useState(ai.score != null ? String(ai.score) : '');
+  const [rating, setRating] = useState(ai.rating || 4);
+  const [feedback, setFeedback] = useState(ai.feedback || '');
   const n = Number(score);
   return (
     <Card accent="blue">
       <Title>{k.name} · {k.student && k.student.name}</Title>
       <Small style={{ marginTop: 6 }}>Test given</Small>
       <Body style={{ backgroundColor: C.bg, padding: 10, borderRadius: 8 }}>{k.prompt}</Body>
+      {k.aiReview ? (
+        <View style={{ backgroundColor: C.bg, padding: 10, borderRadius: 8, marginTop: 8 }}>
+          <Small style={{ fontWeight: '700' }}>AI suggestion: {k.aiReview.score}/100 · {k.aiReview.rating} ★ (passes {(k.aiReview.passes || []).join(' and ')})</Small>
+          {[...(k.aiReview.reasons || []), ...(k.aiReview.flags || [])].map((r, i) => <Small key={i} style={{ color: C.goldText }}>Needs your check: {r}</Small>)}
+          {(k.aiReview.criteria || []).map((c, i) => <Small key={i}>{c.criterion}: {c.points}/{c.max}{c.reason ? ` · ${c.reason}` : ''}</Small>)}
+          <Small style={{ marginTop: 4 }}>{k.aiReview.feedback}</Small>
+        </View>
+      ) : null}
       <Small style={{ marginTop: 8 }}>Student’s answer</Small>
       <Body style={{ backgroundColor: C.bg, padding: 10, borderRadius: 8 }}>{k.answer}</Body>
       <Field label="Score" hint={score !== '' && !isNaN(n) ? (n >= 70 ? 'This will verify the student' : 'Below 70: the student can ask for a retest') : '0 to 100. 70 or more passes.'} keyboardType="numeric" value={score} onChangeText={setScore} />
@@ -174,8 +183,8 @@ function SkillTests() {
         {!req.length && <Card><Body>No skills are waiting for a test.</Body></Card>}
         {req.map((k) => <ArrangeBox key={k._id} k={k} reload={reload} />)}
       </Section>
-      <Section title="Score answers" count={sub.length}>
-        {!sub.length && <Card><Body>No answers are waiting to be scored.</Body></Card>}
+      <Section title="Needs your decision" count={sub.length}>
+        {!sub.length && <Card><Body>Nothing needs your decision. AI scored the rest.</Body></Card>}
         {sub.map((k) => <ScoreBox key={k._id} k={k} reload={reload} />)}
       </Section>
     </>
@@ -222,6 +231,7 @@ function Jobs({ chat }) {
 
 export function Admin({ chat }) {
   const [tab, setTab] = useState('Overview');
+  const tdir = useTabDir(['Overview', 'Payments', 'Jobs', 'Messages', 'Companies', 'Students', 'Skill tests'], tab);
   const [o] = useLoad('/admin/overview', {});
   const unread = useUnread();
   const badges = o ? {
@@ -234,7 +244,7 @@ export function Admin({ chat }) {
   return (
     <>
       <Tabs items={['Overview', 'Payments', 'Jobs', 'Messages', 'Companies', 'Students', 'Skill tests']} tab={tab} setTab={setTab} badges={badges} />
-      <FadeIn key={tab}>
+      <FadeIn key={tab} from={tdir} dist={14} dur={360}>
       {tab === 'Overview' && <Overview go={setTab} />}
       {tab === 'Payments' && <AdminPayments chat={chat} />}
       {tab === 'Jobs' && <Jobs chat={chat} />}

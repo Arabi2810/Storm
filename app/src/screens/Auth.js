@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { View, Text, Pressable, Platform } from 'react-native';
 import { C, R, T, shadow, FONT } from '../theme';
-import { H1, H2, Body, Small, Card, Btn, Field, Tabs, Row, Divider, FadeIn, Float } from '../components/ui';
+import { H1, H2, Title, Body, Small, Card, Btn, Row, Divider, FadeIn, Float, Tabs, Press, Shake, FloatField, PasswordMeter, Stepper, CheckPop } from '../components/ui';
 import { api, run, setToken, store } from '../api';
 
 const font = FONT ? { fontFamily: FONT } : null;
@@ -12,7 +12,32 @@ const ROLES = [
   { id: 'admin', icon: '🛡️', title: 'I’m an admin', text: 'Approve companies, score tests, publish jobs and record payments.', tone: 'gold' },
 ];
 
-const STEPS = [
+/* Web only: the hero lines type in with animation-timing-function: steps(10, end).
+   It is plain CSS (injected once) so the browser runs it directly; the text is matched by id. */
+const heroLine = { color: C.white, fontSize: 34, lineHeight: 40, fontWeight: '800', letterSpacing: -0.8, alignSelf: 'flex-start' };
+if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getElementById('sip-steps-css')) {
+  const st = document.createElement('style');
+  st.id = 'sip-steps-css';
+  /* One loop (8s): type in (1.2s) -> read it (5s) -> type out (1.2s) -> short pause -> again. */
+  st.textContent = `
+    @keyframes sipLoop {
+      0%    { clip-path: inset(0 100% 0 0); }
+      15%   { clip-path: inset(0 0% 0 0); }
+      77.5% { clip-path: inset(0 0% 0 0); }
+      92.5% { clip-path: inset(0 100% 0 0); }
+      100%  { clip-path: inset(0 100% 0 0); }
+    }
+    #sip-hero-1, #sip-hero-2 { clip-path: inset(0 100% 0 0); animation: sipLoop 8s steps(10, end) infinite both; }
+    #sip-hero-2 { animation-delay: .6s; }
+    @media (prefers-reduced-motion: reduce) { #sip-hero-1, #sip-hero-2 { animation: none; clip-path: none; } }`;
+  document.head.appendChild(st);
+}
+
+/* On web the hero lines type in first (about 2.5s); everything else then fades up one after another. */
+export const HOME_T0 = Platform.OS === 'web' ? 2500 : 300;
+const SOFT = { dist: 10, dur: 400 };
+
+const HOW = [
   ['Verify', 'Pass a short skill test'],
   ['Apply', 'Comment on jobs you can do'],
   ['Earn', 'Get paid after the work is accepted'],
@@ -28,174 +53,284 @@ export function Welcome({ onPick }) {
           <View style={{ alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,.14)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 99 }}>
             <Text style={[font, { color: '#DAD9FF', fontSize: 12, fontWeight: '700' }]}>For students in Bangladesh</Text>
           </View>
-          <Text style={[font, { color: C.white, fontSize: 34, lineHeight: 40, fontWeight: '800', letterSpacing: -0.8, marginTop: 14 }]}>Earn while{'\n'}you study.</Text>
-          <Text style={[font, { color: '#C9CBFF', fontSize: 16, lineHeight: 24, marginTop: 10 }]}>Verified students find paid work. Companies find reliable talent.</Text>
+          <View style={{ marginTop: 14 }}>
+            <Text id="sip-hero-1" style={[font, heroLine]}>Earn while</Text>
+            <Text id="sip-hero-2" style={[font, heroLine]}>you study.</Text>
+          </View>
+          <FadeIn delay={HOME_T0} {...SOFT}>
+            <Text style={[font, { color: '#C9CBFF', fontSize: 16, lineHeight: 24, marginTop: 10 }]}>Verified students find paid work. Companies find reliable talent.</Text>
+          </FadeIn>
         </View>
       </FadeIn>
 
-      <View style={{ marginTop: 14 }}>
-        {ROLES.map((r, i) => (
-          <FadeIn key={r.id} delay={300 + i * 120}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={r.title}
-            onPress={() => onPick(r.id)}
-            style={({ hovered, pressed }) => [
-              { backgroundColor: C.surface, borderRadius: R.lg, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: C.line, flexDirection: 'row', alignItems: 'center', gap: 14 },
-              shadow(1),
-              hovered && Platform.OS === 'web' && { borderColor: C[r.tone] },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <View style={{ width: 48, height: 48, borderRadius: 14, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ fontSize: 24 }}>{r.icon}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[T.title, font]}>{r.title}</Text>
-              <Body style={{ marginTop: 2, fontSize: 14, lineHeight: 20 }}>{r.text}</Body>
-            </View>
-            <Text style={{ fontSize: 22, color: C.mute }}>›</Text>
-          </Pressable>
+      <FadeIn delay={HOME_T0 + 100} {...SOFT}>
+        <Small style={{ marginTop: 18, marginBottom: 2, fontWeight: '700' }}>Choose how you want to continue</Small>
+      </FadeIn>
+      <View style={{ marginTop: 8 }}>
+        {ROLES.filter((r) => r.id !== 'admin').map((r, i) => (
+          <FadeIn key={r.id} delay={HOME_T0 + 200 + i * 120} {...SOFT}>
+            <Press
+              label={r.title}
+              onPress={() => onPick(r.id)}
+              style={({ hovered }) => [
+                { backgroundColor: C.surface, borderRadius: R.lg, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: C.line, flexDirection: 'row', alignItems: 'center', gap: 14 },
+                shadow(1),
+                hovered && Platform.OS === 'web' && { borderColor: C[r.tone], transform: [{ translateY: -2 }], boxShadow: `0 14px 34px rgba(${C.shadowRgb},.16)`, transition: 'all .2s ease' },
+              ]}
+            >
+              <View style={{ width: 48, height: 48, borderRadius: 14, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ fontSize: 24 }}>{r.icon}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[T.title, font]}>{r.title}</Text>
+                <Body style={{ marginTop: 2, fontSize: 14, lineHeight: 20 }}>{r.text}</Body>
+              </View>
+              <Text style={{ fontSize: 22, color: C.mute }}>›</Text>
+            </Press>
           </FadeIn>
         ))}
       </View>
 
-      <FadeIn delay={700}><Card style={{ marginTop: 8, backgroundColor: C.brandSoft, borderColor: 'transparent' }}>
-        <H2 style={{ fontSize: 16 }}>How it works for students</H2>
-        <View style={{ marginTop: 10, gap: 10 }}>
-          {STEPS.map(([a, b], i) => (
-            <View key={a} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: C.brandFill, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: C.white, fontWeight: '800', fontSize: 13 }}>{i + 1}</Text>
+      <FadeIn delay={HOME_T0 + 500} {...SOFT}>
+        <Card style={{ marginTop: 8, backgroundColor: C.brandSoft, borderColor: 'transparent' }}>
+          <H2 style={{ fontSize: 16 }}>How it works for students</H2>
+          <View style={{ marginTop: 10, gap: 10 }}>
+            {HOW.map(([a, b], i) => (
+              <View key={a} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: C.brandFill, alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: C.white, fontWeight: '800', fontSize: 13 }}>{i + 1}</Text>
+                </View>
+                <Text style={[T.body, font, { flex: 1, color: C.ink }]}><Text style={{ fontWeight: '700' }}>{a}.</Text> {b}</Text>
               </View>
-              <Text style={[T.body, font, { flex: 1, color: C.ink }]}><Text style={{ fontWeight: '700' }}>{a}.</Text> {b}</Text>
-            </View>
-          ))}
-        </View>
-      </Card></FadeIn>
+            ))}
+          </View>
+        </Card>
+      </FadeIn>
     </>
   );
 }
 
-/* Required fields per role, so mistakes are caught before the request is sent. */
-const REQUIRED = {
-  common: [['email', 'Email'], ['password', 'Password']],
-  student: [['name', 'Full name'], ['phone', 'Mobile number'], ['university', 'University'], ['department', 'Department'], ['year', 'Academic year'], ['studentId', 'Student ID'], ['skills', 'At least one skill'], ['hoursPerWeek', 'Weekly hours']],
-  company: [['name', 'Full name'], ['phone', 'Mobile number'], ['companyName', 'Company name'], ['industry', 'Industry'], ['city', 'City'], ['website', 'Website or Facebook page']],
-  admin: [['name', 'Full name'], ['phone', 'Mobile number'], ['setupCode', 'Admin setup code']],
+/* ---------- Form definition ----------
+   Sign-up is split into short steps. Every field is described once here; the screen renders and validates from it. */
+const EMAIL = { k: 'email', label: 'Email', props: { autoCapitalize: 'none', keyboardType: 'email-address', autoComplete: 'email' } };
+const ACCOUNT = {
+  title: 'Account', sub: 'This is how you’ll log in.',
+  fields: [
+    EMAIL,
+    { k: 'password', label: 'Password', secure: true, meter: true, props: { autoComplete: 'new-password' } },
+    { k: 'confirm', label: 'Confirm password', secure: true, props: { autoComplete: 'new-password' } },
+  ],
+};
+const ABOUT = {
+  title: 'About you', sub: 'So everyone knows who they’re working with.',
+  fields: [
+    { k: 'name', label: 'Full name', props: { autoComplete: 'name' } },
+    { k: 'phone', label: 'Mobile number', hint: 'For example 01712345678', props: { keyboardType: 'phone-pad', autoComplete: 'tel' } },
+  ],
+};
+const FLOW = {
+  student: [
+    ACCOUNT, ABOUT,
+    { title: 'Education', sub: 'Companies see this on your profile.', fields: [
+      { k: 'university', label: 'University' },
+      { k: 'department', label: 'Department' },
+      { k: 'year', label: 'Academic year', hint: '1 to 6', half: 1, props: { keyboardType: 'numeric' } },
+      { k: 'studentId', label: 'Student ID', half: 1.3 },
+    ] },
+    { title: 'Skills', sub: 'An admin will arrange a test for each skill. You can add more later.', fields: [
+      { k: 'skills', label: 'Skills', hint: 'Separate with commas, up to 5. For example: Content Writing, Excel', props: { placeholder: 'Content Writing, Graphic Design' } },
+      { k: 'hoursPerWeek', label: 'Hours you can work per week', hint: '1 to 60', props: { keyboardType: 'numeric' } },
+      { k: 'portfolio', label: 'Portfolio or LinkedIn', opt: true, props: { autoCapitalize: 'none' } },
+    ] },
+  ],
+  company: [
+    ACCOUNT, ABOUT,
+    { title: 'Company', sub: 'An admin checks these details before you can post jobs.', fields: [
+      { k: 'companyName', label: 'Company name' },
+      { k: 'industry', label: 'Industry', props: { placeholder: 'Clothing, education…' } },
+      { k: 'city', label: 'City' },
+      { k: 'website', label: 'Website or Facebook page', hint: 'Helps us verify your business', props: { autoCapitalize: 'none' } },
+      { k: 'licenseNo', label: 'Trade licence number', opt: true },
+    ] },
+  ],
+  admin: [
+    ACCOUNT, ABOUT,
+    { title: 'Access', sub: 'Ask the owner of the platform for this code.', fields: [
+      { k: 'setupCode', label: 'Admin setup code', secure: true },
+    ] },
+  ],
+};
+const LOGIN = {
+  fields: [EMAIL, { k: 'password', label: 'Password', secure: true, props: { autoComplete: 'current-password' } }],
 };
 
-const Group = ({ title, hint, children }) => (
-  <View style={{ marginTop: 20 }}>
-    <Text style={[T.title, font]}>{title}</Text>
-    {hint ? <Small style={{ marginTop: 2 }}>{hint}</Small> : null}
-    {children}
-  </View>
-);
+const MAIL = /^\S+@\S+\.\S+$/;
+const check = (fd, val, f) => {
+  const s = String(val || '').trim();
+  if (!s && !fd.opt) return `${fd.label} is required`;
+  if (fd.k === 'email' && s && !MAIL.test(s)) return 'Enter a valid email address';
+  if (fd.k === 'password' && f.__reg && val && val.length < 8) return 'Use at least 8 characters';
+  if (fd.k === 'confirm' && s && val !== f.password) return 'Passwords do not match';
+  if (fd.k === 'year' && s && !(Number(s) >= 1 && Number(s) <= 6)) return 'Enter a year from 1 to 6';
+  if (fd.k === 'hoursPerWeek' && s && !(Number(s) >= 1 && Number(s) <= 60)) return 'Enter hours from 1 to 60';
+  if (fd.k === 'skills' && s.split(',').filter((x) => x.trim()).length > 5) return 'Add up to 5 skills';
+  return '';
+};
+
+const AFTER = {
+  student: 'Next: add a skill and take a short test to get verified.',
+  company: 'An admin will approve your company before you can post jobs.',
+  admin: 'Taking you to your console…',
+};
 
 export function Auth({ role, onAuth }) {
   const [mode, setMode] = useState('login');
+  const [step, setStep] = useState(0);
+  const [dir, setDir] = useState('right');
   const [f, setF] = useState({});
   const [errs, setErrs] = useState({});
-  const set = (k) => (v) => { setF((p) => ({ ...p, [k]: v })); if (errs[k]) setErrs((e) => ({ ...e, [k]: undefined })); };
-  const reg = mode === 'register';
-  const v = (k) => f[k] || '';
-  const R_ = ROLES.find((r) => r.id === role);
+  const [shake, setShake] = useState(0);
+  const [done, setDone] = useState(null);
+  const refs = useRef({});
 
-  const validate = () => {
-    const e = {};
-    const need = reg ? [...REQUIRED[role], ...REQUIRED.common] : REQUIRED.common;
-    need.forEach(([k, label]) => { if (!String(f[k] || '').trim()) e[k] = `${label} is required`; });
-    if (f.email && !/^\S+@\S+\.\S+$/.test(f.email.trim())) e.email = 'Enter a valid email address';
-    if (reg) {
-      if (f.password && f.password.length < 8) e.password = 'Use at least 8 characters';
-      if (f.password !== f.confirm) e.confirm = 'Passwords do not match';
-      if (role === 'student' && f.year && !(Number(f.year) >= 1 && Number(f.year) <= 6)) e.year = 'Enter a year from 1 to 6';
-    }
-    setErrs(e);
-    return !Object.keys(e).length;
+  const reg = mode === 'register';
+  const flow = FLOW[role];
+  const cur = reg ? flow[step] : LOGIN;
+  const last = !reg || step === flow.length - 1;
+  const R_ = ROLES.find((r) => r.id === role);
+  const v = (k) => f[k] || '';
+
+  const set = (k) => (val) => { setF((p) => ({ ...p, [k]: val })); if (errs[k]) setErrs((e) => ({ ...e, [k]: undefined })); };
+  const ctx = () => ({ ...f, __reg: reg });
+  const onBlurCheck = (fd) => () => {
+    if (!v(fd.k)) return; // don't scold a field the person has only just passed through
+    const m = check(fd, f[fd.k], ctx());
+    setErrs((e) => ({ ...e, [fd.k]: m || undefined }));
   };
 
-  const go = () => {
-    if (!validate()) return;
-    return run(async () => {
-      const d = await api(reg ? '/auth/register' : '/auth/login', 'POST', { ...f, email: f.email.trim(), role });
+  const validateStep = () => {
+    const e = {};
+    let first = null;
+    cur.fields.forEach((fd) => {
+      const m = check(fd, f[fd.k], ctx());
+      e[fd.k] = m || undefined;
+      if (m && !first) first = fd.k;
+    });
+    setErrs((p) => ({ ...p, ...e }));
+    if (first) {
+      setShake((n) => n + 1);
+      const el = refs.current[first];
+      if (el && el.focus) el.focus();
+      return false;
+    }
+    return true;
+  };
+
+  const next = () => { if (validateStep()) { setDir('right'); setStep((s) => s + 1); } return false; };
+  const prev = () => { setDir('left'); setStep((s) => Math.max(0, s - 1)); };
+  const switchMode = (m) => { setErrs({}); setStep(0); setDir('right'); setMode(m); };
+
+  const go = async () => {
+    if (!validateStep()) return false;
+    const { __reg, ...body } = f;
+    const ok = await run(async () => {
+      const d = await api(reg ? '/auth/register' : '/auth/login', 'POST', { ...body, email: f.email.trim(), role });
       setToken(d.token);
       if (store) store.setItem('sip_token', d.token);
-      onAuth(d.user);
+      if (reg) { setDone(d.user); setTimeout(() => onAuth(d.user), 1500); } else onAuth(d.user);
     }, reg && role === 'company' ? 'Account created. An admin will approve your company before you can post jobs.' : undefined);
+    if (!ok) { setShake((n) => n + 1); return false; }
+  };
+  const submit = last ? go : next;
+
+  /* ----- success moment after sign-up ----- */
+  if (done) {
+    return (
+      <Card style={{ padding: 28 }}>
+        <FadeIn>
+          <View style={{ alignItems: 'center', paddingVertical: 14 }}>
+            <CheckPop size={68} />
+            <H1 style={{ marginTop: 22, textAlign: 'center' }}>{`You’re in${done.name ? `, ${String(done.name).split(' ')[0]}` : ''}!`}</H1>
+            <Body style={{ marginTop: 6, textAlign: 'center', maxWidth: 320 }}>{AFTER[role]}</Body>
+          </View>
+        </FadeIn>
+      </Card>
+    );
+  }
+
+  const okFor = (fd) => (fd.k === 'email' ? MAIL.test(v('email').trim()) : fd.k === 'confirm' ? !!v('confirm') && v('confirm') === v('password') : false);
+
+  const field = (fd) => {
+    const idx = cur.fields.indexOf(fd);
+    const isLast = idx === cur.fields.length - 1;
+    return (
+      <View key={fd.k} style={fd.half ? { flex: fd.half } : null}>
+        <FloatField
+          ref={(r) => { refs.current[fd.k] = r; }}
+          label={fd.opt ? `${fd.label} (optional)` : fd.label}
+          value={v(fd.k)}
+          onChangeText={set(fd.k)}
+          error={errs[fd.k]}
+          hint={fd.hint}
+          ok={!errs[fd.k] && okFor(fd)}
+          secure={fd.secure}
+          onBlur={onBlurCheck(fd)}
+          returnKeyType={isLast ? 'done' : 'next'}
+          blurOnSubmit={isLast}
+          onSubmitEditing={isLast ? submit : () => { const n = cur.fields[idx + 1]; const el = n && refs.current[n.k]; if (el && el.focus) el.focus(); }}
+          {...(fd.props || {})}
+        />
+        {fd.meter && reg ? <PasswordMeter value={v('password')} /> : null}
+      </View>
+    );
   };
 
-  const E = (k) => errs[k];
+  const body = [];
+  for (let i = 0; i < cur.fields.length; i++) {
+    const fd = cur.fields[i];
+    const nx = cur.fields[i + 1];
+    if (fd.half && nx && nx.half) {
+      body.push(<View key={fd.k} style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>{field(fd)}{field(nx)}</View>);
+      i++;
+    } else body.push(field(fd));
+  }
+
   return (
-    <Card style={{ padding: 20 }}>
-      <Row style={{ marginTop: 0 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20 }}>{R_.icon}</Text></View>
-        <View style={{ flex: 1 }}>
-          <H1 style={{ fontSize: 21, lineHeight: 26 }}>{reg ? `Create your ${role} account` : `Welcome back`}</H1>
-          <Small>{reg ? 'It takes about two minutes.' : `Log in as a ${role}.`}</Small>
+    <Shake trigger={shake}>
+      <Card style={{ padding: 20 }}>
+        <Row style={{ marginTop: 0 }}>
+          <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}><Text style={{ fontSize: 20 }}>{R_.icon}</Text></View>
+          <View style={{ flex: 1 }}>
+            <H1 style={{ fontSize: 21, lineHeight: 26 }}>{reg ? `Create your ${role} account` : 'Welcome back'}</H1>
+            <Small>{reg ? `Step ${step + 1} of ${flow.length} · about two minutes` : `Log in as a ${role}.`}</Small>
+          </View>
+        </Row>
+
+        <Tabs items={['Log in', 'Sign up']} tab={reg ? 'Sign up' : 'Log in'} setTab={(t) => switchMode(t === 'Sign up' ? 'register' : 'login')} />
+        {reg ? <Stepper steps={flow.map((s) => s.title)} index={step} /> : null}
+
+        <FadeIn key={`${mode}-${step}`} from={dir} dist={14} dur={380}>
+          {reg ? (
+            <View style={{ marginTop: 14 }}>
+              <Title>{cur.title}</Title>
+              {cur.sub ? <Small style={{ marginTop: 2 }}>{cur.sub}</Small> : null}
+            </View>
+          ) : null}
+          {body}
+        </FadeIn>
+
+        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14, alignItems: 'flex-start' }}>
+          {reg && step > 0 ? <View style={{ flex: 0.8 }}><Btn kind="ghost" title="Back" onPress={prev} /></View> : null}
+          <View style={{ flex: 1.6 }}><Btn title={reg ? (last ? 'Create account' : 'Continue') : 'Log in'} onPress={submit} /></View>
         </View>
-      </Row>
 
-      <Tabs items={['Log in', 'Sign up']} tab={reg ? 'Sign up' : 'Log in'} setTab={(t) => { setErrs({}); setMode(t === 'Sign up' ? 'register' : 'login'); }} />
-
-      {reg && (
-        <Group title="About you">
-          <Field label="Full name" autoComplete="name" value={v('name')} onChangeText={set('name')} error={E('name')} />
-          <Field label="Mobile number" hint="For example 01712345678" keyboardType="phone-pad" autoComplete="tel" value={v('phone')} onChangeText={set('phone')} error={E('phone')} />
-        </Group>
-      )}
-
-      {reg && role === 'student' && (
-        <>
-          <Group title="Education">
-            <Field label="University" value={v('university')} onChangeText={set('university')} error={E('university')} />
-            <Field label="Department" value={v('department')} onChangeText={set('department')} error={E('department')} />
-            <Row style={{ gap: 12, flexWrap: 'nowrap', alignItems: 'flex-start' }}>
-              <View style={{ flex: 1 }}><Field label="Academic year" hint="1 to 6" keyboardType="numeric" value={v('year')} onChangeText={set('year')} error={E('year')} /></View>
-              <View style={{ flex: 1.4 }}><Field label="Student ID" value={v('studentId')} onChangeText={set('studentId')} error={E('studentId')} /></View>
-            </Row>
-          </Group>
-          <Group title="Your work" hint="An admin will arrange a test for each skill. You can add more later.">
-            <Field label="Skills" placeholder="Content Writing, Graphic Design, Excel" hint="Separate with commas, up to 5" value={v('skills')} onChangeText={set('skills')} error={E('skills')} />
-            <Field label="Hours you can work per week" hint="1 to 60" keyboardType="numeric" value={v('hoursPerWeek')} onChangeText={set('hoursPerWeek')} error={E('hoursPerWeek')} />
-            <Field label="Portfolio or LinkedIn (optional)" autoCapitalize="none" value={v('portfolio')} onChangeText={set('portfolio')} />
-          </Group>
-        </>
-      )}
-
-      {reg && role === 'company' && (
-        <Group title="Company">
-          <Field label="Company name" value={v('companyName')} onChangeText={set('companyName')} error={E('companyName')} />
-          <Field label="Industry" placeholder="Clothing, education…" value={v('industry')} onChangeText={set('industry')} error={E('industry')} />
-          <Field label="City" value={v('city')} onChangeText={set('city')} error={E('city')} />
-          <Field label="Website or Facebook page" hint="Helps us verify your business" autoCapitalize="none" value={v('website')} onChangeText={set('website')} error={E('website')} />
-          <Field label="Trade licence number (optional)" value={v('licenseNo')} onChangeText={set('licenseNo')} />
-        </Group>
-      )}
-
-      {reg && role === 'admin' && (
-        <Group title="Admin access">
-          <Field label="Admin setup code" secureTextEntry value={v('setupCode')} onChangeText={set('setupCode')} error={E('setupCode')} />
-        </Group>
-      )}
-
-      <Group title={reg ? 'Sign-in details' : 'Your details'}>
-        <Field label="Email" autoCapitalize="none" keyboardType="email-address" autoComplete="email" value={v('email')} onChangeText={set('email')} error={E('email')} />
-        <Field label="Password" hint={reg ? 'At least 8 characters' : undefined} secureTextEntry autoComplete={reg ? 'new-password' : 'current-password'} value={v('password')} onChangeText={set('password')} error={E('password')}
-          onSubmitEditing={reg ? undefined : go} />
-        {reg && <Field label="Confirm password" secureTextEntry value={v('confirm')} onChangeText={set('confirm')} error={E('confirm')} onSubmitEditing={go} />}
-      </Group>
-
-      <View style={{ marginTop: 10 }}>
-        <Btn title={reg ? 'Create account' : 'Log in'} onPress={go} />
-      </View>
-      <Divider />
-      <Pressable onPress={() => setMode(reg ? 'login' : 'register')} accessibilityRole="button">
-        <Text style={[T.small, font, { textAlign: 'center' }]}>
-          {reg ? 'Already have an account? ' : 'New here? '}<Text style={{ color: C.brand, fontWeight: '700' }}>{reg ? 'Log in' : 'Create an account'}</Text>
-        </Text>
-      </Pressable>
-    </Card>
+        <Divider />
+        <Pressable onPress={() => switchMode(reg ? 'login' : 'register')} accessibilityRole="button">
+          <Text style={[T.small, font, { textAlign: 'center' }]}>
+            {reg ? 'Already have an account? ' : 'New here? '}<Text style={{ color: C.brand, fontWeight: '700' }}>{reg ? 'Log in' : 'Create an account'}</Text>
+          </Text>
+        </Pressable>
+      </Card>
+    </Shake>
   );
 }
