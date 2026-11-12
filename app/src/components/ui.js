@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, forwardRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, Pressable, ActivityIndicator, Animated, Easing, Platform, StyleSheet, AccessibilityInfo } from 'react-native';
 import { C, R, T, FONT, shadow, STATUS, sheet, themed, useTheme, setThemePref } from '../theme';
 import { initials } from '../api';
@@ -21,14 +21,15 @@ try {
 } catch (e) { /* not supported here: keep motion on */ }
 const NATIVE = Platform.OS !== 'web';
 
-export function FadeIn({ delay = 0, children, style }) {
+export function FadeIn({ delay = 0, children, style, from = 'bottom', dist = 22, dur = 560 }) {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    Animated.timing(v, { toValue: 1, duration: reduceMotion ? 0 : 560, delay: reduceMotion ? 0 : delay, easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE }).start();
+    Animated.timing(v, { toValue: 1, duration: reduceMotion ? 0 : dur, delay: reduceMotion ? 0 : delay, easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE }).start();
   }, []);
-  return (
-    <Animated.View style={[style, { opacity: v, transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [22, 0] }) }] }]}>{children}</Animated.View>
-  );
+  const move = from === 'bottom' || from === 'top'
+    ? { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [from === 'top' ? -dist : dist, 0] }) }
+    : { translateX: v.interpolate({ inputRange: [0, 1], outputRange: [(from === 'left' ? -1 : 1) * dist * 1.4, 0] }) };
+  return <Animated.View style={[style, { opacity: v, transform: [move] }]}>{children}</Animated.View>;
 }
 
 function useCount(target) {
@@ -63,15 +64,35 @@ export const Banner = () => (
 );
 
 /* ---------- Layout ---------- */
-export const Card = ({ children, style, accent }) => (
-  <View style={[st.card, shadow(1), accent && { borderLeftWidth: 4, borderLeftColor: C[accent] || accent }, style]}>{children}</View>
-);
+/* Cards that mount in the same burst (a list, a tab) get a rising delay automatically,
+   so every screen staggers in without each screen having to ask. */
+let _last = 0, _seq = 0;
+const autoDelay = () => { const n = Date.now(); if (n - _last > 150) _seq = 0; _last = n; return Math.min(_seq++, 8) * 65; };
 
-export function Tap({ onPress, children, label, delay = 0 }) {
+/* Hook for tab bodies: which way should the new tab slide in from? */
+export function useTabDir(items, tab) {
+  const prev = useRef(items.indexOf(tab));
+  const i = items.indexOf(tab);
+  const d = i >= prev.current ? 'right' : 'left';
+  prev.current = i;
+  return d;
+}
+
+export function Card({ children, style, accent, delay }) {
+  const [d] = useState(() => (delay != null ? delay : autoDelay()));
+  return (
+    <FadeIn delay={d} dist={16} dur={440}>
+      <View style={[st.card, shadow(1), accent && { borderLeftWidth: 4, borderLeftColor: C[accent] || accent }, style]}>{children}</View>
+    </FadeIn>
+  );
+}
+
+export function Tap({ onPress, children, label, delay }) {
+  const [dl] = useState(() => (delay != null ? delay : autoDelay()));
   const sc = useRef(new Animated.Value(1)).current;
   const to = (x) => Animated.spring(sc, { toValue: x, useNativeDriver: Platform.OS !== 'web', speed: 40, bounciness: 7 }).start();
   return (
-    <FadeIn delay={delay}><Animated.View style={{ transform: [{ scale: sc }] }}>
+    <FadeIn delay={dl} dist={16} dur={440}><Animated.View style={{ transform: [{ scale: sc }] }}>
       <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} onPressIn={() => to(0.975)} onPressOut={() => to(1)}
         style={({ hovered }) => [st.card, shadow(1), hovered && Platform.OS === 'web' && st.cardHover]}>
         {children}
@@ -97,13 +118,18 @@ export const Section = ({ title, count, action, children }) => (
 export const Divider = () => <View style={{ height: 1, backgroundColor: C.line, marginVertical: 12 }} />;
 
 /* ---------- Button ---------- */
-export function Btn({ title, onPress, kind = 'solid', icon, disabled, small, full = true }) {
+function BtnBase({ title, onPress, kind = 'solid', icon, disabled, small, full = true }) {
   const [busy, setBusy] = useState(false);
+  const [tick, setTick] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
   const off = disabled || busy;
   const press = async () => {
     if (off) return;
     setBusy(true);
-    try { await onPress(); } finally { setBusy(false); }
+    let good = false;
+    try { good = (await onPress()) !== false; } finally { if (alive.current) setBusy(false); }
+    if (good && alive.current && (kind === 'solid' || kind === 'gold')) { setTick(true); setTimeout(() => { if (alive.current) setTick(false); }, 900); }
   };
   const k = BTN[kind];
   return (
@@ -118,12 +144,13 @@ export function Btn({ title, onPress, kind = 'solid', icon, disabled, small, ful
         off && { opacity: 0.55 },
       ]}
     >
-      {busy ? <ActivityIndicator size="small" color={k.text} /> : (
+      {busy ? <ActivityIndicator size="small" color={k.text} /> : tick ? <Pop><Text style={[st.btnText, { color: k.text }]}>✓</Text></Pop> : (
         <Text style={[st.btnText, font, small && { fontSize: 13 }, { color: k.text }]}>{icon ? `${icon}  ` : ''}{title}</Text>
       )}
     </Pressable>
   );
 }
+export function Btn(p) { return p.pulse ? <Breathe to={1.035}><BtnBase {...p} /></Breathe> : <BtnBase {...p} />; }
 const BTN = themed(() => ({
   solid: { box: { backgroundColor: C.brandFill, ...Platform.select({ web: { backgroundImage: 'linear-gradient(135deg,#4F46E5,#7C6CF7)', boxShadow: '0 8px 20px rgba(79,70,229,.32)', transition: 'filter .2s' }, default: {} }) }, hover: { filter: 'brightness(1.1)' }, text: C.white },
   gold: { box: { backgroundColor: C.gold }, hover: { backgroundColor: '#966214' }, text: C.white },
@@ -199,16 +226,21 @@ export const Empty = ({ title, text, icon = '○', action }) => (
 );
 
 function Pulse({ style }) {
-  const o = useRef(new Animated.Value(0.5)).current;
+  const x = useRef(new Animated.Value(0)).current;
+  const [w, setW] = useState(0);
   useEffect(() => {
-    const a = Animated.loop(Animated.sequence([
-      Animated.timing(o, { toValue: 1, duration: 700, useNativeDriver: Platform.OS !== 'web' }),
-      Animated.timing(o, { toValue: 0.5, duration: 700, useNativeDriver: Platform.OS !== 'web' }),
-    ]));
+    if (reduceMotion) return;
+    const a = Animated.loop(Animated.timing(x, { toValue: 1, duration: 1300, easing: Easing.inOut(Easing.quad), useNativeDriver: NATIVE }));
     a.start();
     return () => a.stop();
-  }, [o]);
-  return <Animated.View style={[{ backgroundColor: C.line, borderRadius: 6, opacity: o }, style]} />;
+  }, [x]);
+  return (
+    <View onLayout={(e) => setW(e.nativeEvent.layout.width)} style={[{ backgroundColor: C.line, borderRadius: 6, overflow: 'hidden' }, style]}>
+      <Animated.View pointerEvents="none" style={[{ position: 'absolute', top: 0, bottom: 0, width: '55%', backgroundColor: 'rgba(255,255,255,.28)' },
+        Platform.OS === 'web' && { backgroundImage: 'linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent)', backgroundColor: 'transparent' },
+        { transform: [{ translateX: x.interpolate({ inputRange: [0, 1], outputRange: [-w * 0.6, w] }) }] }]} />
+    </View>
+  );
 }
 
 /* Skeleton cards instead of a lonely spinner: the page feels faster and doesn't jump. */
@@ -225,22 +257,46 @@ export const Loading = ({ rows = 3 }) => (
 );
 
 /* ---------- Navigation ---------- */
-export const Tabs = ({ items, tab, setTab, badges = {} }) => (
-  <View style={st.tabsWrap}>
-    <View style={st.tabs}>
-      {items.map((t) => {
-        const on = tab === t;
-        return (
-          <Pressable key={t} accessibilityRole="tab" accessibilityState={{ selected: on }} onPress={() => setTab(t)}
-            style={({ hovered }) => [st.tab, on && st.tabOn, !on && hovered && Platform.OS === 'web' && { backgroundColor: C.greySoft }]}>
-            <Text style={[st.tabText, font, on && { color: C.white }]}>{t}</Text>
-            {badges[t] > 0 && <Pop key={badges[t]}><View style={[st.dot, on && { backgroundColor: C.white }]}><Text style={[st.dotText, on && { color: C.brandFill }]}>{badges[t]}</Text></View></Pop>}
-          </Pressable>
-        );
-      })}
+const spring = (val, to) => (reduceMotion
+  ? Animated.timing(val, { toValue: to, duration: 0, useNativeDriver: false })
+  : Animated.spring(val, { toValue: to, friction: 9, tension: 120, useNativeDriver: false }));
+
+export function Tabs({ items, tab, setTab, badges = {} }) {
+  const [lay, setLay] = useState({});
+  const [ready, setReady] = useState(false);
+  const placed = useRef(false);
+  const box = useRef({ x: new Animated.Value(0), y: new Animated.Value(0), w: new Animated.Value(0), h: new Animated.Value(0) }).current;
+  const cur = lay[tab];
+  useEffect(() => {
+    if (!cur) return;
+    if (!placed.current) {
+      box.x.setValue(cur.x); box.y.setValue(cur.y); box.w.setValue(cur.width); box.h.setValue(cur.height);
+      placed.current = true; setReady(true); return;
+    }
+    Animated.parallel([spring(box.x, cur.x), spring(box.y, cur.y), spring(box.w, cur.width), spring(box.h, cur.height)]).start();
+  }, [tab, cur && cur.x, cur && cur.y, cur && cur.width, cur && cur.height]);
+  const measure = (t) => (e) => {
+    const l = e.nativeEvent.layout;
+    setLay((p) => (p[t] && p[t].x === l.x && p[t].y === l.y && p[t].width === l.width && p[t].height === l.height ? p : { ...p, [t]: l }));
+  };
+  return (
+    <View style={st.tabsWrap}>
+      <View style={st.tabs}>
+        <Animated.View pointerEvents="none" style={[st.tabInd, { opacity: ready ? 1 : 0, left: box.x, top: box.y, width: box.w, height: box.h }]} />
+        {items.map((t) => {
+          const on = tab === t;
+          return (
+            <Pressable key={t} accessibilityRole="tab" accessibilityState={{ selected: on }} onPress={() => setTab(t)} onLayout={measure(t)}
+              style={({ hovered }) => [st.tab, !on && hovered && Platform.OS === 'web' && { backgroundColor: C.greySoft }]}>
+              <Text style={[st.tabText, font, on && { color: C.white }]}>{t}</Text>
+              {badges[t] > 0 && <Pop key={badges[t]}><View style={[st.dot, on && { backgroundColor: C.white }]}><Ping color={on ? C.white : C.red} /><Text style={[st.dotText, on && { color: C.brandFill }]}>{badges[t]}</Text></View></Pop>}
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
-  </View>
-);
+  );
+}
 
 export const Seg = ({ items, value, onChange }) => (
   <View style={st.seg}>
@@ -353,7 +409,7 @@ const st = sheet(() => ({
   tabsWrap: { marginVertical: 12 },
   tabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, backgroundColor: C.surface, padding: 5, borderRadius: R.md, borderWidth: 1, borderColor: C.line },
   tab: { flexGrow: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 40, paddingHorizontal: 14, borderRadius: R.sm },
-  tabOn: { backgroundColor: C.brandFill, ...Platform.select({ web: { backgroundImage: 'linear-gradient(135deg,#4F46E5,#7C6CF7)', boxShadow: '0 6px 16px rgba(79,70,229,.3)' }, default: {} }) },
+  tabInd: { position: 'absolute', borderRadius: R.sm, backgroundColor: C.brandFill, ...Platform.select({ web: { backgroundImage: 'linear-gradient(135deg,#4F46E5,#7C6CF7)', boxShadow: '0 6px 16px rgba(79,70,229,.3)' }, default: {} }) },
   tabText: { color: C.inkSoft, fontWeight: '700', fontSize: 14 },
   dot: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: C.red, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
   dotText: { color: C.white, fontSize: 11, fontWeight: '800' },
@@ -486,5 +542,244 @@ export function Confetti({ count = 22 }) {
         }} />
       ))}
     </View>
+  );
+}
+
+
+/* =====================================================================
+   Interactive extras: used by the login / sign-up flow
+   ===================================================================== */
+
+/* A pressable that squishes slightly under the finger. `style` may be a function (hovered, pressed). */
+export function Press({ onPress, children, style, label, scale = 0.97 }) {
+  const sc = useRef(new Animated.Value(1)).current;
+  const to = (x) => Animated.spring(sc, { toValue: reduceMotion ? 1 : x, useNativeDriver: NATIVE, speed: 40, bounciness: 7 }).start();
+  return (
+    <Animated.View style={{ transform: [{ scale: sc }] }}>
+      <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} onPressIn={() => to(scale)} onPressOut={() => to(1)} style={style}>{children}</Pressable>
+    </Animated.View>
+  );
+}
+
+/* Wiggles its children sideways whenever `trigger` changes to a new non-zero number (e.g. a failed submit). */
+export function Shake({ trigger = 0, children, style }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!trigger || reduceMotion) return;
+    v.setValue(0);
+    Animated.sequence([1, -1, 0.7, -0.7, 0].map((x) => Animated.timing(v, { toValue: x, duration: 55, useNativeDriver: NATIVE }))).start();
+  }, [trigger]);
+  return <Animated.View style={[style, { transform: [{ translateX: v.interpolate({ inputRange: [-1, 1], outputRange: [-9, 9] }) }] }]}>{children}</Animated.View>;
+}
+
+/* Text field whose label floats up when you focus or type. Has a Show/Hide toggle for passwords
+   and a green tick via `ok`. Forwards its ref to the TextInput so screens can move focus. */
+export const FloatField = forwardRef(function FloatField({ label, error, hint, ok, secure, value = '', onChangeText, onFocus, onBlur, placeholder, style, ...p }, ref) {
+  const [focus, setFocus] = useState(false);
+  const [show, setShow] = useState(false);
+  const up = useRef(new Animated.Value(value ? 1 : 0)).current;
+  const lifted = focus || !!value;
+  useEffect(() => {
+    Animated.timing(up, { toValue: lifted ? 1 : 0, duration: reduceMotion ? 0 : 150, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+  }, [lifted]);
+  const tint = error ? C.red : focus ? C.brand : C.mute;
+  return (
+    <View style={{ marginTop: 12 }}>
+      <View style={[ff.box, { borderColor: error ? C.red : focus ? C.brand : C.line, backgroundColor: focus ? C.surface : C.field },
+        focus && Platform.select({ web: { boxShadow: `0 0 0 4px ${(error ? C.red : C.brand)}22` }, default: {} })]}>
+        <Animated.Text pointerEvents="none" style={[font, { position: 'absolute', left: 14, fontWeight: '600', color: tint,
+          top: up.interpolate({ inputRange: [0, 1], outputRange: [17, 7] }), fontSize: up.interpolate({ inputRange: [0, 1], outputRange: [15, 11.5] }) }]}>{label}</Animated.Text>
+        <TextInput
+          ref={ref}
+          accessibilityLabel={label}
+          value={value}
+          onChangeText={onChangeText}
+          secureTextEntry={!!secure && !show}
+          placeholder={focus ? placeholder : undefined}
+          placeholderTextColor={C.placeholder}
+          onFocus={(e) => { setFocus(true); onFocus && onFocus(e); }}
+          onBlur={(e) => { setFocus(false); onBlur && onBlur(e); }}
+          style={[ff.input, font, (secure || ok) && { paddingRight: 64 }, Platform.OS === 'web' && { outlineStyle: 'none' }, style]}
+          {...p}
+        />
+        {secure ? (
+          <Pressable accessibilityRole="button" accessibilityLabel={show ? 'Hide password' : 'Show password'} onPress={() => setShow((x) => !x)} hitSlop={8} style={ff.side}>
+            <Text style={[font, { color: C.brand, fontWeight: '700', fontSize: 13 }]}>{show ? 'Hide' : 'Show'}</Text>
+          </Pressable>
+        ) : ok ? (
+          <View pointerEvents="none" style={ff.side}><Pop><Text style={{ color: C.green, fontWeight: '800', fontSize: 16 }}>✓</Text></Pop></View>
+        ) : null}
+      </View>
+      {error ? (
+        <FadeIn dist={6} dur={200}><Text style={[T.small, font, { color: C.red, marginTop: 4 }]}>{error}</Text></FadeIn>
+      ) : hint ? <Text style={[T.small, font, { marginTop: 4 }]}>{hint}</Text> : null}
+    </View>
+  );
+});
+const ff = sheet(() => ({
+  box: { minHeight: 56, borderWidth: 1.5, borderRadius: R.md, justifyContent: 'center', ...Platform.select({ web: { transition: 'border-color .18s, box-shadow .18s, background-color .18s' }, default: {} }) },
+  input: { minHeight: 54, paddingHorizontal: 14, paddingTop: 22, paddingBottom: 6, fontSize: 15, color: C.ink },
+  side: { position: 'absolute', right: 14, top: 0, bottom: 0, justifyContent: 'center' },
+}));
+
+/* Password strength bar: 0 (empty) to 4 */
+export const pwScore = (p = '') => {
+  if (!p) return 0;
+  let n = 0;
+  if (p.length >= 8) n++;
+  if (/[a-z]/.test(p) && /[A-Z]/.test(p)) n++;
+  if (/\d/.test(p)) n++;
+  if (/[^A-Za-z0-9]/.test(p) || p.length >= 12) n++;
+  return Math.max(1, n);
+};
+export function PasswordMeter({ value }) {
+  const n = pwScore(value);
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(v, { toValue: n / 4, duration: reduceMotion ? 0 : 260, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+  }, [n]);
+  const col = [C.line, C.red, C.gold, C.blue, C.green][n];
+  const word = ['', 'Weak', 'Fair', 'Good', 'Strong'][n];
+  return (
+    <View style={{ marginTop: 8 }}>
+      <View style={{ height: 5, borderRadius: 3, backgroundColor: C.line, overflow: 'hidden' }}>
+        <Animated.View style={{ height: 5, borderRadius: 3, backgroundColor: col, width: v.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }} />
+      </View>
+      <Text style={[T.small, font, { marginTop: 4, color: n ? col : C.mute }]}>{n ? `Password strength: ${word}` : 'Use 8+ characters with letters and numbers'}</Text>
+    </View>
+  );
+}
+
+/* Multi-step progress: circles joined by lines that fill as you move forward. */
+function StepLine({ on, hidden }) {
+  const v = useRef(new Animated.Value(on ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(v, { toValue: on ? 1 : 0, duration: reduceMotion ? 0 : 320, useNativeDriver: false }).start();
+  }, [on]);
+  return (
+    <View style={{ flex: 1, height: 3, borderRadius: 2, backgroundColor: hidden ? 'transparent' : C.line, overflow: 'hidden' }}>
+      {!hidden && <Animated.View style={{ height: 3, backgroundColor: C.brand, width: v.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }} />}
+    </View>
+  );
+}
+export function Stepper({ steps, index }) {
+  return (
+    <View accessibilityLabel={`Step ${index + 1} of ${steps.length}`} style={{ flexDirection: 'row', marginTop: 2, marginBottom: 4 }}>
+      {steps.map((t, i) => {
+        const done = i < index;
+        const now = i === index;
+        return (
+          <View key={t} style={{ flex: 1, alignItems: 'center' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', width: '100%' }}>
+              <StepLine hidden={i === 0} on={i <= index} />
+              <Pop key={done ? 'd' : now ? 'n' : 'f'}>
+                <View style={{ width: 26, height: 26, borderRadius: 13, marginHorizontal: 4, alignItems: 'center', justifyContent: 'center',
+                  backgroundColor: done ? C.brandFill : now ? C.surface : C.line, borderWidth: now ? 2 : 0, borderColor: C.brand }}>
+                  <Text style={[font, { fontSize: 12, fontWeight: '800', color: done ? C.white : now ? C.brand : C.mute }]}>{done ? '✓' : i + 1}</Text>
+                </View>
+              </Pop>
+              <StepLine hidden={i === steps.length - 1} on={i < index} />
+            </View>
+            <Text numberOfLines={1} style={[font, { fontSize: 11, marginTop: 5, fontWeight: now ? '700' : '500', color: now ? C.brand : C.mute }]}>{t}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+
+/* =====================================================================
+   Motion pack: small looping details that make the app feel alive
+   ===================================================================== */
+const loop = (v, dur, rest = 0) => Animated.loop(Animated.sequence([
+  Animated.timing(v, { toValue: 1, duration: dur, easing: Easing.inOut(Easing.sin), useNativeDriver: NATIVE }),
+  ...(rest ? [Animated.delay(rest)] : []),
+  Animated.timing(v, { toValue: 0, duration: rest ? 0 : dur, useNativeDriver: NATIVE }),
+]));
+
+/* Gentle "breathing" scale for logos and primary calls to action. */
+export function Breathe({ on = true, to = 1.05, dur = 1700, children }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!on || reduceMotion) return undefined;
+    const a = loop(v, dur);
+    a.start();
+    return () => a.stop();
+  }, [on]);
+  if (!on) return children;
+  return <Animated.View style={{ transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, to] }) }] }}>{children}</Animated.View>;
+}
+
+/* Expanding ring behind a notification badge. */
+function Ping({ color }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (reduceMotion) return undefined;
+    const a = Animated.loop(Animated.timing(v, { toValue: 1, duration: 1800, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE }));
+    a.start();
+    return () => a.stop();
+  }, []);
+  return <Animated.View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 99, backgroundColor: color,
+    opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] }), transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 2.2] }) }] }} />;
+}
+
+/* A soft ring that pulses outwards from an avatar. */
+export function Glow({ size = 72, color, children }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (reduceMotion) return undefined;
+    const a = Animated.loop(Animated.timing(v, { toValue: 1, duration: 2400, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE }));
+    a.start();
+    return () => a.stop();
+  }, []);
+  return (
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      <Animated.View pointerEvents="none" style={{ position: 'absolute', width: size, height: size, borderRadius: size / 2, borderWidth: 2, borderColor: color || C.brand,
+        opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.7, 0] }), transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.5] }) }] }} />
+      {children}
+    </View>
+  );
+}
+
+/* Waving hand for greetings. */
+export function Wave() {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (reduceMotion) return undefined;
+    const a = loop(v, 1000, 1400);
+    a.start();
+    return () => a.stop();
+  }, []);
+  return <Animated.Text style={{ fontSize: 17, transform: [{ rotate: v.interpolate({ inputRange: [0, 0.2, 0.4, 0.6, 0.8, 1], outputRange: ['0deg', '16deg', '-8deg', '14deg', '-4deg', '0deg'] }) }] }}>👋</Animated.Text>;
+}
+
+
+/* Save/bookmark heart: springs up and bursts into little dots when switched on. */
+export function Heart({ on, onChange }) {
+  const sc = useRef(new Animated.Value(1)).current;
+  const burst = useRef(new Animated.Value(0)).current;
+  const press = () => {
+    const n = !on;
+    onChange(n);
+    if (reduceMotion) return;
+    Animated.sequence([
+      Animated.timing(sc, { toValue: 1.5, duration: 110, useNativeDriver: NATIVE }),
+      Animated.spring(sc, { toValue: 1, friction: 4, useNativeDriver: NATIVE }),
+    ]).start();
+    if (n) { burst.setValue(0); Animated.timing(burst, { toValue: 1, duration: 520, easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE }).start(); }
+  };
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={on ? 'Remove from saved' : 'Save job'} onPress={press} hitSlop={8} style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
+      {Array.from({ length: 7 }).map((_, i) => {
+        const g = (i / 7) * Math.PI * 2;
+        return (
+          <Animated.View key={i} pointerEvents="none" style={{ position: 'absolute', width: 5, height: 5, borderRadius: 3, backgroundColor: C.red,
+            opacity: burst.interpolate({ inputRange: [0, 0.1, 1], outputRange: [0, 1, 0] }),
+            transform: [{ translateX: burst.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(g) * 20] }) }, { translateY: burst.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(g) * 20] }) }, { scale: burst.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }] }} />
+        );
+      })}
+      <Animated.Text style={{ fontSize: 20, color: on ? C.red : C.mute, transform: [{ scale: sc }] }}>{on ? '♥' : '♡'}</Animated.Text>
+    </Pressable>
   );
 }
