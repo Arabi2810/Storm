@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, Pressable, Platform, BackHandler, StyleSheet, useWindowDimensions } from 'react-native';
+import { View, Text, ScrollView, Pressable, Animated, Platform, BackHandler, StyleSheet, useWindowDimensions } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
-import { C, R, FONT, sheet, useTheme } from './src/theme';
+import { C, R, FONT, sheet, useTheme, shadow } from './src/theme';
 import { api, setToken, store, bindToast } from './src/api';
-import { Avatar, Toast, Loading, Small, FadeIn, Btn, Chip, ThemePicker, themeIcon } from './src/components/ui';
-import { Welcome, Auth } from './src/screens/Auth';
+import { Avatar, Toast, Loading, Small, FadeIn, Float, Breathe, Btn, Chip, ThemePicker, themeIcon } from './src/components/ui';
+import { Welcome, Auth, HOME_T0 } from './src/screens/Auth';
 import { Chat } from './src/screens/Chat';
 import { TaskDetail } from './src/screens/TaskDetail';
 import { Student } from './src/screens/Student';
@@ -24,6 +24,9 @@ const screenTitle = (user, role, top) => {
   return { student: 'Find work', company: 'Your jobs', admin: 'Admin console' }[user.role];
 };
 
+/* The footer fades up last on the home screen; on other screens it just shows. */
+const FootFade = ({ on, children }) => (on ? <FadeIn delay={HOME_T0 + 1100} dist={10} dur={400}>{children}</FadeIn> : children);
+
 export default function App() {
   const { pref, dark } = useTheme(); // re-renders the whole app when the theme changes
   const [user, setUser] = useState(null);
@@ -36,6 +39,9 @@ export default function App() {
   const [menu, setMenu] = useState(false);
   const [themeMenu, setThemeMenu] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const prog = useRef(new Animated.Value(0)).current;
+  const [far, setFar] = useState(false);
+  const [dir, setDir] = useState('bottom'); // which way the next screen slides in
   const [hh, setHh] = useState(64);
   const timer = useRef(null);
   const scroller = useRef(null);
@@ -70,11 +76,11 @@ export default function App() {
     style.textContent = `:root{color-scheme:${dark ? 'dark' : 'light'}} body{background:radial-gradient(900px 480px at 100% -5%,${C.page1},transparent 60%),radial-gradient(700px 420px at -10% 35%,${C.page2},transparent 60%),${C.bg};background-attachment:fixed} *{-webkit-tap-highlight-color:transparent} [role=button]:focus-visible,[role=tab]:focus-visible,[role=radio]:focus-visible{outline:3px solid ${C.brand}88;outline-offset:2px}`;
   }, [dark]);
 
-  const push = (screen) => { setStack((st) => [...st, screen]); scroller.current && scroller.current.scrollTo({ y: 0, animated: false }); };
-  const pop = () => setStack((st) => st.slice(0, -1));
+  const push = (screen) => { setDir('right'); setStack((st) => [...st, screen]); scroller.current && scroller.current.scrollTo({ y: 0, animated: false }); };
+  const pop = () => { setDir('left'); setStack((st) => st.slice(0, -1)); };
   const openChat = (id) => push({ name: 'chat', id });
   const canBack = user ? stack.length > 0 : !!role;
-  const back = () => { if (user) pop(); else setRole(null); };
+  const back = () => { if (user) pop(); else { setDir('left'); setRole(null); } };
 
   useEffect(() => {
     const saved = store && store.getItem('sip_token');
@@ -98,7 +104,7 @@ export default function App() {
 
   useEffect(() => { scroller.current && scroller.current.scrollTo({ y: 0, animated: false }); }, [user && user._id, role]);
 
-  const logout = () => { setMenu(false); setToken(null); if (store) store.removeItem('sip_token'); setUser(null); setRole(null); setStack([]); };
+  const logout = () => { setDir('bottom'); setMenu(false); setToken(null); if (store) store.removeItem('sip_token'); setUser(null); setRole(null); setStack([]); };
   const top = stack[stack.length - 1];
   const title = screenTitle(user, role, top);
 
@@ -106,7 +112,16 @@ export default function App() {
     <View style={s.screen}>
       <StatusBar style={dark ? 'light' : 'dark'} />
 
+      {/* slow drifting colour blobs behind everything: quiet movement that makes the app feel alive */}
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <Float dy={36} dur={7000} style={{ position: 'absolute', left: -90, top: 120, width: 300, height: 300, borderRadius: 150, backgroundColor: dark ? 'rgba(124,108,247,.14)' : 'rgba(124,108,247,.12)' }} />
+        <Float dy={-30} dur={8200} style={{ position: 'absolute', right: -80, top: 380, width: 260, height: 260, borderRadius: 130, backgroundColor: dark ? 'rgba(255,138,92,.10)' : 'rgba(255,138,92,.13)' }} />
+      </View>
+
       <View style={[s.header, scrolled && s.headerShadow]} onLayout={(e) => setHh(e.nativeEvent.layout.height)}>
+        <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: -1, height: 3, overflow: 'hidden' }}>
+          <Animated.View style={[{ height: 3, width: '100%', backgroundColor: C.brand, transform: [{ translateX: prog.interpolate({ inputRange: [0, 1], outputRange: [-width, 0] }) }] }, Platform.OS === 'web' && { backgroundImage: 'linear-gradient(90deg,#FF8A5C,#4F46E5)' }]} />
+        </View>
         <View style={s.headerInner}>
           <View style={s.headerLeft}>
             {canBack ? (
@@ -114,7 +129,7 @@ export default function App() {
                 <Text style={s.backArrow}>‹</Text>
               </Pressable>
             ) : (
-              <View style={s.logo}><Text style={s.logoText}>S</Text></View>
+              <Breathe to={1.07} dur={1800}><View style={s.logo}><Text style={s.logoText}>S</Text></View></Breathe>
             )}
             <View style={{ flexShrink: 1 }}>
               <Text numberOfLines={1} style={[s.brand, font]}>{title || 'Student Income'}</Text>
@@ -146,7 +161,7 @@ export default function App() {
       {themeMenu && (
         <>
           <Pressable accessibilityLabel="Close theme menu" onPress={() => setThemeMenu(false)} style={[StyleSheet.absoluteFill, { zIndex: 55 }]} />
-          <FadeIn style={[s.menu, { width: 200, padding: 8, top: hh + 6, right: Math.max(14, (width - 760) / 2 + 14) }]}>
+          <FadeIn from="top" dist={10} dur={220} style={[s.menu, { width: 200, padding: 8, top: hh + 6, right: Math.max(14, (width - 760) / 2 + 14) }]}>
             <Small style={{ paddingHorizontal: 10, paddingTop: 4, paddingBottom: 6, fontWeight: '700', color: C.mute }}>Appearance</Small>
             <ThemePicker />
           </FadeIn>
@@ -156,7 +171,7 @@ export default function App() {
       {menu && user && (
         <>
           <Pressable accessibilityLabel="Close menu" onPress={() => setMenu(false)} style={[StyleSheet.absoluteFill, { zIndex: 55 }]} />
-          <FadeIn style={[s.menu, { top: hh + 6, right: Math.max(14, (width - 760) / 2 + 14) }]}>
+          <FadeIn from="top" dist={10} dur={220} style={[s.menu, { top: hh + 6, right: Math.max(14, (width - 760) / 2 + 14) }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
               <Avatar name={user.role === 'company' ? user.companyName : user.name} size={44} />
               <View style={{ flex: 1 }}>
@@ -169,13 +184,14 @@ export default function App() {
         </>
       )}
 
+      <TopFab show={far} onPress={() => scroller.current && scroller.current.scrollTo({ y: 0, animated: true })} />
       <Toast toast={toast} />
 
-      <ScrollView ref={scroller} onScroll={(e) => setScrolled(e.nativeEvent.contentOffset.y > 4)} scrollEventThrottle={16} keyboardShouldPersistTaps="handled" contentContainerStyle={s.scroll}>
-        <FadeIn style={s.col} key={`${user ? user.role : role || 'out'}-${top ? top.name + (top.id || '') : 'root'}`}>
+      <ScrollView ref={scroller} onScroll={(e) => { const n = e.nativeEvent; const y = n.contentOffset.y; setScrolled(y > 4); setFar(y > 320); prog.setValue(Math.min(1, y / Math.max(1, n.contentSize.height - n.layoutMeasurement.height))); }} scrollEventThrottle={16} keyboardShouldPersistTaps="handled" contentContainerStyle={s.scroll}>
+        <FadeIn style={s.col} from={dir} dist={dir === 'bottom' ? 22 : 14} dur={dir === 'bottom' ? 560 : 400} key={`${user ? user.role : role || 'out'}-${top ? top.name + (top.id || '') : 'root'}`}>
           {!ready && <Loading />}
-          {ready && !user && !role && <Welcome onPick={setRole} />}
-          {ready && !user && role && <Auth key={role} role={role} onAuth={setUser} />}
+          {ready && !user && !role && <Welcome onPick={(r) => { setDir('right'); setRole(r); }} />}
+          {ready && !user && role && <Auth key={role} role={role} onAuth={(u) => { setDir('bottom'); setUser(u); }} />}
           {user && top && top.name === 'task' && <TaskDetail key={top.id} id={top.id} user={user} chat={openChat} />}
           {user && top && top.name === 'chat' && <Chat key={top.id} id={top.id} user={user} />}
           {user && top && top.name === 'post' && <PostJob user={user} done={pop} />}
@@ -184,13 +200,37 @@ export default function App() {
           {user && !top && user.role === 'admin' && <Admin chat={openChat} />}
 
           {ready && (
+            <FootFade on={!user && !role}>
             <Small style={{ textAlign: 'center', marginTop: 28 }}>
               Student Income Platform · Payments are handled by our team
+              {!user && !role ? (
+                <>
+                  <Text>{'\u00A0\u00A0\u00A0\u00A0'}</Text>
+                  <Text accessibilityRole="link" onPress={() => { setDir('right'); setRole('admin'); }} style={{ color: C.brand, fontWeight: '700', textDecorationLine: 'underline' }}>Admin login</Text>
+                </>
+              ) : null}
             </Small>
+            </FootFade>
           )}
         </FadeIn>
       </ScrollView>
     </View>
+  );
+}
+
+/* Round "back to top" button that springs in once you've scrolled a screen or so. */
+function TopFab({ show, onPress }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.spring(v, { toValue: show ? 1 : 0, useNativeDriver: Platform.OS !== 'web', friction: 6, tension: 140 }).start();
+  }, [show]);
+  return (
+    <Animated.View pointerEvents={show ? 'auto' : 'none'} style={{ position: 'absolute', right: 16, bottom: 24, zIndex: 45, opacity: v, transform: [{ scale: v }] }}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Back to top" onPress={onPress}
+        style={({ hovered }) => [{ width: 46, height: 46, borderRadius: 23, backgroundColor: C.brandFill, alignItems: 'center', justifyContent: 'center' }, shadow(2), hovered && Platform.OS === 'web' && { transform: [{ translateY: -2 }] }]}>
+        <Text style={{ color: C.white, fontSize: 20, fontWeight: '800' }}>↑</Text>
+      </Pressable>
+    </Animated.View>
   );
 }
 
