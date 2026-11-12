@@ -4,6 +4,8 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { aiEnabled, generateTest, gradeAnswer, similarity, MODEL: AI_MODEL_USED, PROVIDER: AI_PROVIDER_USED } = require('./ai');
+const AUTO_VERIFY = String(process.env.AUTO_VERIFY || 'false').toLowerCase() === 'true'; // false: an admin confirms every AI score
 
 const {
   MONGODB_URI = 'mongodb://127.0.0.1:27017/student_income',
@@ -40,6 +42,10 @@ const Skill = mongoose.model('Skill', new mongoose.Schema({
   student: ref('User'), name: String, key: String,
   status: { type: String, default: 'requested' },
   prompt: String, answer: String, score: Number, rating: Number, feedback: String,
+  rubric: [{ criterion: String, full_marks: String, points: Number }], // hidden from students
+  aiReview: { score: Number, rating: Number, feedback: String, passes: [Number], criteria: Array, reasons: [String], flags: [String], model: String, at: Date },
+  usedPrompts: [String], // every test this student has had for this skill (so a retest is never the same)
+  gradedBy: String,      // 'ai' | 'admin'  (a student is only auto-verified when the AI is confident; otherwise an admin decides)
 }, { timestamps: true }));
 
 // pending -> open -> assigned -> funded -> submitted <-> revision -> accepted -> paid   (or rejected)
@@ -81,6 +87,7 @@ const Txn = mongoose.model('Txn', new mongoose.Schema({
 const h = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const sign = (u) => jwt.sign({ id: u._id }, JWT_SECRET, { expiresIn: '7d' });
+const forStudent = (k) => { const o = k.toObject ? k.toObject() : { ...k }; delete o.rubric; delete o.aiReview; delete o.usedPrompts; return o; };
 const pub = (u) => { const o = u.toObject(); delete o.password; return o; };
 const same = (a, b) => String(a) === String(b);
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -94,6 +101,49 @@ const sum = (arr, f) => arr.reduce((a, x) => a + (Number(f(x)) || 0), 0);
 const maybeTrust = (u) => {
   if (u.level === 'verified' && u.completed >= 3 && u.ratingCount > 0 && u.ratingSum / u.ratingCount >= 4) u.level = 'trusted';
 };
+
+/* ---------- AI test + scoring ---------- */
+const generating = new Set();
+const SIMILAR = 0.45; // above this overlap with any earlier test of the same skill, the test is rejected
+
+// Writes a fresh, unique test for a skill. Throws a 400 if the skill is not a real skill.
+async function makeTest(k) {
+  if (!aiEnabled()) throw fail(503, 'AI tests are not turned on yet. An admin will send your test.');
+  const id = String(k._id);
+  if (generating.has(id)) throw fail(409, 'Your test is being prepared, please wait');
+  generating.add(id);
+  try {
+    const old = await Skill.find({ key: k.key, _id: { $ne: k._id } }).sort('-updatedAt').limit(60).select('prompt usedPrompts').lean();
+    const seen = [...(k.usedPrompts || []), ...old.flatMap((o) => [o.prompt, ...(o.usedPrompts || [])])].filter(Boolean);
+    let best = null; // { text, rubric, worst }
+    for (let i = 0; i < 3; i++) {
+      const t = await generateTest(k.name, seen.slice(0, 6));
+      if (!t.valid) throw fail(400, `"${k.name}" does not look like a skill we can test. Try a clearer name, like Graphic Design.`);
+      const worst = Math.max(0, ...seen.map((p) => similarity(p, t.text)));
+      if (!best || worst < best.worst) best = { text: t.text, rubric: t.rubric, worst };
+      if (worst < SIMILAR) break;
+    }
+    const fresh = await Skill.findById(k._id);
+    if (!fresh || fresh.status !== 'requested') return fresh; // admin or student changed it meanwhile
+    fresh.prompt = best.text; fresh.rubric = best.rubric; fresh.usedPrompts.push(best.text); fresh.status = 'ready';
+    await fresh.save();
+    return fresh;
+  } finally { generating.delete(id); }
+}
+
+// Saves a score and, if 70+, verifies the student. Used by the AI grader and by the admin fallback.
+async function applyScore(k, score, rating, feedback, by) {
+  Object.assign(k, { score, rating, feedback: clean(feedback), status: 'scored', gradedBy: by });
+  await k.save();
+  if (score >= 70) {
+    const u = await User.findById(k.student);
+    const entry = { skill: k.name, score, rating };
+    const i = u.verifiedSkills.findIndex((v) => norm(v.skill) === k.key);
+    if (i >= 0) u.verifiedSkills.set(i, entry); else u.verifiedSkills.push(entry);
+    if (u.level === 'learner') u.level = 'verified';
+    await u.save();
+  }
+}
 
 const auth = (...roles) => async (req, res, next) => {
   try {
@@ -165,7 +215,10 @@ app.post('/api/auth/register', h(async (req, res) => {
 
   if (await User.findOne({ email })) throw fail(400, 'This email is already registered');
   const u = await User.create({ ...data, password: await bcrypt.hash(b.password, 10) });
-  if (skills.length) await Skill.insertMany(skills.map((name) => ({ student: u._id, name, key: norm(name) })));
+  if (skills.length) {
+    const made = await Skill.insertMany(skills.map((name) => ({ student: u._id, name, key: norm(name) })));
+    if (aiEnabled()) (async () => { for (const k of made) await makeTest(k).catch((e) => console.log('test not generated:', e.message)); })();
+  }
   res.json({ token: sign(u), user: pub(u) });
 }));
 
@@ -182,7 +235,7 @@ app.get('/api/me', auth(), (req, res) => res.json(pub(req.user)));
 
 /* ---------- Skills ---------- */
 app.get('/api/skills/mine', auth('student'), h(async (req, res) => {
-  res.json(await Skill.find({ student: req.user._id }).sort('createdAt'));
+  res.json(await Skill.find({ student: req.user._id }).select('-rubric -aiReview -usedPrompts').sort('createdAt'));
 }));
 
 app.get('/api/skills/popular', auth(), h(async (req, res) => {
@@ -197,7 +250,20 @@ app.post('/api/skills', auth('student'), h(async (req, res) => {
   if (name.length < 2 || name.length > 40) throw fail(400, 'Enter a skill name (2 to 40 characters)');
   if (await Skill.findOne({ student: req.user._id, key: norm(name) })) throw fail(400, 'You already added this skill');
   if ((await Skill.countDocuments({ student: req.user._id })) >= 8) throw fail(400, 'You can add up to 8 skills');
-  res.json(await Skill.create({ student: req.user._id, name, key: norm(name) }));
+  const k = await Skill.create({ student: req.user._id, name, key: norm(name) });
+  if (!aiEnabled()) return res.json(forStudent(k)); // no API key: the admin writes the test by hand
+  try { res.json(forStudent(await makeTest(k))); }
+  catch (e) {
+    if (e.status === 400) await k.deleteOne(); // not a real skill: do not keep it
+    if (e.status === 400) throw e;
+    res.json(forStudent(k)); // AI hiccup: skill stays 'requested', student can press "Generate my test"
+  }
+}));
+
+app.post('/api/skills/:id/generate', auth('student'), h(async (req, res) => {
+  const k = await mySkill(req);
+  if (k.status !== 'requested') throw fail(400, 'This skill already has a test');
+  res.json(forStudent(await makeTest(k)));
 }));
 
 const mySkill = async (req) => {
@@ -210,17 +276,31 @@ app.post('/api/skills/:id/submit', auth('student'), h(async (req, res) => {
   const k = await mySkill(req);
   if (k.status !== 'ready') throw fail(400, 'Your test is not ready yet');
   if (clean(req.body.answer).length < 20) throw fail(400, 'Write a fuller answer (at least 20 characters)');
-  k.answer = clean(req.body.answer); k.status = 'submitted';
+  k.answer = clean(req.body.answer).slice(0, 8000); k.status = 'submitted';
   await k.save();
-  res.json(k);
+  if (aiEnabled()) {
+    try {
+      const g = await gradeAnswer(k.name, k.prompt, k.rubric, k.answer);
+      // copying check: the same answer from another student for the same skill is never auto-scored
+      const flags = [];
+      const others = await Skill.find({ key: k.key, _id: { $ne: k._id }, answer: { $exists: true } }).select('answer').limit(200).lean();
+      if (others.some((o) => similarity(o.answer, k.answer) > 0.7)) flags.push('very similar to another student\'s answer');
+      k.aiReview = { score: g.score, rating: g.rating, feedback: g.feedback, passes: g.passes, criteria: g.criteria, reasons: g.reasons, flags, model: `${AI_PROVIDER_USED}:${AI_MODEL_USED}`, at: new Date() };
+      await k.save();
+      if (AUTO_VERIFY && !g.needsReview && !flags.length) await applyScore(k, g.score, g.rating, g.feedback, 'ai');
+      // otherwise (AUTO_VERIFY off, or the AI is unsure) the skill stays "submitted" and an admin decides, with the AI's marks as a suggestion
+    } catch (e) { console.log('AI grading failed, left for admin:', e.message); }
+  }
+  res.json(forStudent(k));
 }));
 
 app.post('/api/skills/:id/retest', auth('student'), h(async (req, res) => {
   const k = await mySkill(req);
   if (k.status !== 'scored' || k.score >= 70) throw fail(400, 'Retest is only for tests you did not pass');
-  Object.assign(k, { status: 'requested', prompt: undefined, answer: undefined, score: undefined, rating: undefined });
+  Object.assign(k, { status: 'requested', prompt: undefined, answer: undefined, score: undefined, rating: undefined, feedback: undefined, gradedBy: undefined, aiReview: undefined, rubric: undefined });
   await k.save();
-  res.json(k);
+  if (!aiEnabled()) return res.json(forStudent(k));
+  try { res.json(forStudent(await makeTest(k))); } catch (e) { res.json(forStudent(k)); }
 }));
 
 app.delete('/api/skills/:id', auth('student'), h(async (req, res) => {
@@ -548,16 +628,7 @@ app.post('/api/admin/skills/:id/score', auth('admin'), h(async (req, res) => {
   const rating = Number(req.body.rating);
   if (!k || k.status !== 'submitted') throw fail(400, 'This test is not waiting for a score');
   if (!(score >= 0 && score <= 100) || !(rating >= 1 && rating <= 5)) throw fail(400, 'Enter a score (0 to 100) and a rating (1 to 5)');
-  Object.assign(k, { score, rating, feedback: clean(req.body.feedback), status: 'scored' });
-  await k.save();
-  if (score >= 70) {
-    const u = await User.findById(k.student);
-    const entry = { skill: k.name, score, rating };
-    const i = u.verifiedSkills.findIndex((v) => norm(v.skill) === k.key);
-    if (i >= 0) u.verifiedSkills.set(i, entry); else u.verifiedSkills.push(entry);
-    if (u.level === 'learner') u.level = 'verified';
-    await u.save();
-  }
+  await applyScore(k, score, rating, req.body.feedback, 'admin');
   res.json({ ok: true });
 }));
 
